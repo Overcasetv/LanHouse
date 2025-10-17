@@ -94,6 +94,12 @@ class LanHouseManager(tk.Tk):
         self.geometry("480x420")
         self.resizable(False, False)
 
+        # Set transparent background for main window (where supported)
+        try:
+            self.wm_attributes('-transparentcolor', self['bg'])
+        except Exception:
+            pass
+
         # initialize computers list from data if present, else default 6
         saved_keys = list(self.data.get("computers", {}).keys())
         if saved_keys:
@@ -112,12 +118,17 @@ class LanHouseManager(tk.Tk):
         pc_spin.pack(side=tk.LEFT, padx=(4,8))
         tk.Button(top_ctrl, text="Rename PC", command=self.rename_pc_dialog).pack(side=tk.LEFT)
 
-        # Billing rate UI
-        tk.Label(top_ctrl, text="Hourly Rate ($):").pack(side=tk.LEFT, padx=(16,2))
-        self.rate_var = tk.DoubleVar(value=self.data.get("hourly_rate", 15.0))
-        rate_entry = tk.Entry(top_ctrl, textvariable=self.rate_var, width=6)
+
+        # Per-PC billing rate UI
+        tk.Label(top_ctrl, text="Set Rate for PC:").pack(side=tk.LEFT, padx=(16,2))
+        self.rate_pc_var = tk.StringVar(value=self.computers[0] if self.computers else "")
+        self.rate_val_var = tk.DoubleVar(value=15.0)
+        self.rate_menu = tk.OptionMenu(top_ctrl, self.rate_pc_var, *self.computers, command=self._on_rate_pc_change)
+        self.rate_menu.pack(side=tk.LEFT)
+        rate_entry = tk.Entry(top_ctrl, textvariable=self.rate_val_var, width=6)
         rate_entry.pack(side=tk.LEFT)
         tk.Button(top_ctrl, text="Set Rate", command=self.set_rate).pack(side=tk.LEFT, padx=(2,0))
+        self._on_rate_pc_change(self.rate_pc_var.get())
 
         self.frame = tk.Frame(self)
         self.frame.pack(pady=10)
@@ -141,24 +152,39 @@ class LanHouseManager(tk.Tk):
         self.resizable(True, True)
         self._saved_geometry = None
 
+        # Add button to show transaction history
+        tk.Button(ctrl, text="Show Transactions", command=self.show_transactions_window).pack(side=tk.LEFT, padx=(8,0))
+
         # start periodic UI update
         self._running_update = True
         self.update_display()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def _on_rate_pc_change(self, pc):
+        # Update rate_val_var to match selected PC's rate
+        rate = self.data["computers"].get(pc, {}).get("rate", self.data.get("hourly_rate", 15.0))
+        self.rate_val_var.set(rate)
+
     def set_rate(self):
+        pc = self.rate_pc_var.get()
         try:
-            rate = float(self.rate_var.get())
+            rate = float(self.rate_val_var.get())
             if rate < 0:
                 raise ValueError()
-            self.data["hourly_rate"] = rate
-            self.title(f"Game House Manager - Rate: ${rate:.2f}/h")
+            # Set per-PC rate
+            self.data["computers"].setdefault(pc, {})["rate"] = rate
             save_data(self.data)
-            messagebox.showinfo("Rate Set", f"Hourly rate set to ${rate:.2f}")
+            messagebox.showinfo("Rate Set", f"Hourly rate for {pc} set to ${rate:.2f}")
         except Exception:
             messagebox.showerror("Invalid", "Enter a valid non-negative rate.")
 
     def build_pc_tiles(self):
+        # Update rate menu if PCs changed
+        if hasattr(self, 'rate_menu'):
+            menu = self.rate_menu['menu']
+            menu.delete(0, 'end')
+            for pc in self.computers:
+                menu.add_command(label=pc, command=lambda v=pc: self.rate_pc_var.set(v))
         # clear existing
         for child in self.frame.winfo_children():
             child.destroy()
@@ -174,7 +200,11 @@ class LanHouseManager(tk.Tk):
                     "user": None,
                     "hours_remaining": 0.0,
                     "rest_until": 0.0,
+                    "rate": self.data.get("hourly_rate", 15.0),
                 }
+            # Ensure rate exists for all PCs
+            if "rate" not in self.data["computers"][pc]:
+                self.data["computers"][pc]["rate"] = self.data.get("hourly_rate", 15.0)
 
         # compute grid layout: try to make it roughly square, min 2 cols
         n = len(self.computers)
@@ -278,15 +308,13 @@ class LanHouseManager(tk.Tk):
     
     def get_charge_text(self, pc, final=False):
         info = self.data["computers"][pc]
-        rate = self.data.get("hourly_rate", 15.0)
+        rate = info.get("rate", self.data.get("hourly_rate", 15.0))
         used_seconds = info.get("elapsed", 0)
-        
         # Calculate time elapsed for running sessions only if not finalizing
         if info.get("running") and info.get("start_time") and not final:
             used_seconds += time.time() - info["start_time"]
-            
         charge = (used_seconds / 3600) * rate
-        return f"Charge: ${charge:.2f}"
+        return f"Charge: ${charge:.2f} (Rate: ${rate:.2f}/h)"
 
     def checkout_pc(self, pc):
         # Finaliza a sessão, calcula a cobrança e reseta o PC.
@@ -367,9 +395,22 @@ class LanHouseManager(tk.Tk):
         self.save_now(show_info=False)
         
     def topup_and_assign_dialog(self, pc):
-        # Diálogo que combina Assign User e Top-up Hours
+        # Dialog for Assign User and Top-up Hours, with price calculation
         info = self.data["computers"][pc]
-        
+        rate = info.get("rate", self.data.get("hourly_rate", 15.0))
+
+        def update_price(*args):
+            try:
+                hrs = float(entry_hours.get() or 0)
+                mins = float(entry_mins.get() or 0)
+                total_hours = hrs + mins/60
+                if total_hours < 0:
+                    raise ValueError()
+                price = total_hours * rate
+                price_var.set(f"Amount to pay: ${price:.2f} (Rate: ${rate:.2f}/h)")
+            except Exception:
+                price_var.set("")
+
         def do_topup_assign():
             # 1. Assign User
             name = entry_user.get().strip()
@@ -378,7 +419,7 @@ class LanHouseManager(tk.Tk):
                 return
             info["user"] = name
             self.pc_buttons[pc]["user_var"].set(name)
-            
+
             # 2. Top-up Hours
             try:
                 hrs = float(entry_hours.get() or 0)
@@ -392,46 +433,54 @@ class LanHouseManager(tk.Tk):
             if added <= 0:
                  messagebox.showwarning("Invalid", "Enter a positive amount to add")
                  return
-                 
+
             # Convert to seconds and add
             info["hours_remaining"] = info.get("hours_remaining", 0) + added
             self.pc_buttons[pc]["hours_var"].set(f"Hours: {info['hours_remaining']/3600:.2f}")
-            
+
             # Log the Top-up transaction
-            trans_logger.info(f"TOPUP: PC={pc}, User={name}, HoursAdded={round(added/3600, 2)}")
+            trans_logger.info(f"TOPUP: PC={pc}, User={name}, HoursAdded={round(added/3600, 2)}, Rate={rate}")
 
             self.pc_buttons[pc]["_notified_time_up"] = False
-            
+
             dlg.destroy()
             self.save_now(show_info=False)
-            
+
             # Prompt to start if session wasn't running
             if not info.get("running"):
                  if messagebox.askyesno("Start Now?", f"Hours topped up for {pc}. Do you want to START the session now?"):
                     self.toggle_pc(pc)
 
-
         dlg = tk.Toplevel(self)
         dlg.title(f"Setup Session for {pc}")
-        
+
         # User assignment section
         tk.Label(dlg, text="1. User name:").grid(row=0, column=0, padx=8, pady=(8,0), sticky='w')
         entry_user = tk.Entry(dlg)
         entry_user.insert(0, info.get("user") or "")
         entry_user.grid(row=0, column=1, padx=8, pady=(8,0))
-        
+
         # Hours top-up section
         tk.Label(dlg, text="2. Hours to add:").grid(row=1, column=0, padx=8, pady=(4,0), sticky='w')
         entry_hours = tk.Entry(dlg, width=8)
         entry_hours.insert(0, "1")
         entry_hours.grid(row=1, column=1, padx=8, pady=(4,0))
-        
+
         tk.Label(dlg, text="Minutes to add:").grid(row=2, column=0, padx=8, pady=(4,0), sticky='w')
         entry_mins = tk.Entry(dlg, width=8)
         entry_mins.insert(0, "0")
         entry_mins.grid(row=2, column=1, padx=8, pady=(4,0))
-        
-        tk.Button(dlg, text="Confirm Setup & Top-up", command=do_topup_assign).grid(row=3, column=0, columnspan=2, pady=(16,8))
+
+        # Price display
+        price_var = tk.StringVar()
+        price_label = tk.Label(dlg, textvariable=price_var, fg="blue", font=("Helvetica", 11, "bold"))
+        price_label.grid(row=3, column=0, columnspan=2, pady=(8,0))
+
+        entry_hours.bind('<KeyRelease>', update_price)
+        entry_mins.bind('<KeyRelease>', update_price)
+        update_price()
+
+        tk.Button(dlg, text="Confirm Setup & Top-up", command=do_topup_assign).grid(row=4, column=0, columnspan=2, pady=(16,8))
 
     def set_rest_dialog(self, pc):
         info = self.data["computers"][pc]
@@ -612,7 +661,6 @@ class LanHouseManager(tk.Tk):
                 pass
 
     def export_report(self):
-        # write current usage data to CSV
         try:
             path = f"lanhouse_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             with open(path, 'w', newline='') as csvfile:
@@ -675,7 +723,6 @@ class LanHouseManager(tk.Tk):
         if not messagebox.askyesno("Reset", "Reset all timers and data? This action CANNOT be undone."):
             return
         for pc in self.computers:
-            # Keep user assigned, but reset everything else
             user = self.data["computers"].get(pc, {}).get("user")
             self.data["computers"][pc] = {
                 "running": False, 
@@ -702,11 +749,47 @@ class LanHouseManager(tk.Tk):
         self._running_update = False
         self.destroy()
 
+    def show_transactions_window(self):
+        import re
+        import datetime
+        win = tk.Toplevel(self)
+        win.title("Transaction History")
+        win.geometry("800x500")
+        # Table header
+        header = ["Time", "Type", "PC", "User", "Amount ($)", "Details"]
+        for col, text in enumerate(header):
+            tk.Label(win, text=text, font=("Helvetica", 10, "bold"), borderwidth=1, relief="solid", padx=4, pady=2).grid(row=0, column=col, sticky="nsew")
+        # Read and parse transactions.log
+        rows = []
+        total = 0.0
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        try:
+            with open(TRANSACTION_LOG, "r") as f:
+                for line in f:
+                    # Example: 2025-10-17 14:23:01,123 INFO: CHECKOUT: PC=PC-1, User=John, Elapsed=01:00:00, Charge: $15.00
+                    m = re.match(r"(\d{4}-\d{2}-\d{2} [\d:,]+) [A-Z]+: (\w+): PC=(.*?), User=(.*?),.*?Charge:? \$([\d.]+)", line)
+                    if m:
+                        t, typ, pc, user, amt = m.groups()
+                        if t.startswith(today):
+                            rows.append((t, typ, pc, user, amt, line.strip()))
+                            if typ == "CHECKOUT":
+                                try:
+                                    total += float(amt)
+                                except Exception:
+                                    pass
+        except Exception as e:
+            tk.Label(win, text=f"Could not read {TRANSACTION_LOG}: {e}", fg="red").grid(row=1, column=0, columnspan=6)
+            return
+        # Show rows
+        for r, row in enumerate(rows, 1):
+            for c, val in enumerate(row):
+                tk.Label(win, text=val, font=("Helvetica", 10), borderwidth=1, relief="solid", padx=2, pady=1, anchor="w").grid(row=r, column=c, sticky="nsew")
+        # Show total
+        tk.Label(win, text=f"Total money made today: ${total:.2f}", font=("Helvetica", 12, "bold"), fg="blue").grid(row=len(rows)+1, column=0, columnspan=6, pady=10)
 
 def main():
     app = LanHouseManager()
     app.mainloop()
-
 
 if __name__ == "__main__":
     main()
