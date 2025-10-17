@@ -1,56 +1,55 @@
-# LAN House Manager
+# Game House Manager
 
-A professional LAN house management app for tracking computer usage, billing, rest periods, and more. Built with Python and Tkinter.
+A professional LAN house management system for tracking PC usage, billing, and transactions. Built with Python and Tkinter.
 
 ## Features
-- Assign users to computers
-- Track hours and rest time per PC
-- Visual cues (red/green/blink) for status
-- Adjustable window/grid for any number of PCs
-- Atomic saves, backups, and logging
-- CSV export for usage and billing
-- Billing/rates UI (set hourly rate, see charges)
-- Operator authentication (coming soon)
-- Scheduled backups (coming soon)
-- Audit log, operator accounts, daily sales report, POS integration (coming soon)
+- Per-PC hourly rates (set different rates for each PC)
+- Assign users and top-up hours/minutes per PC
+- Automatic price calculation for top-ups
+- Transaction history window (shows all top-ups and checkouts, with daily totals)
+- Visual status indicators (available, running, time expired, rest)
+- Rest timer for PCs
+- Fit-to-screen and manual resizing
+- Atomic data saves and backup system
+- Logging of all transactions and events
+- CSV export for daily usage and billing reports
+- Easy PC count adjustment and renaming
+- Transparent background for professional look
 
 ## Installation
+1. Ensure you have Python 3.8+ installed.
+2. Clone or download this repository.
+3. Install required packages (if any):
+   ```bash
+   pip install tk
+   ```
+4. Run the application:
+   ```bash
+   python lan_house_manager.py
+   ```
 
-### Prerequisites
-- Python 3.8 or newer (recommended: Python 3.10+)
-- Tkinter (usually included with Python)
-
-### Steps
-1. **Clone or download the project folder**
-   - Place all files in a single directory (e.g., `gameing house project`).
-2. **Install required Python packages**
-   - No external packages required for basic usage.
-   - For advanced features (CSV export, logging), all dependencies are standard library.
-3. **Run the app**
-   - Open a terminal in the project directory.
-   - Run:
-     ```sh
-     python3 lan_house_manager.py
-     ```
-   - The GUI will open. Use the controls to manage PCs, assign users, set rates, and more.
-
-### Optional: Build Standalone Executable
-- Use `setup.py` or a tool like PyInstaller to create a standalone app for Windows/Mac/Linux.
-- Example (with PyInstaller):
-  ```sh
-  pip install pyinstaller
-  pyinstaller --onefile lan_house_manager.py
-  ```
-- The executable will be in the `dist/` folder.
+## Usage
+- Set the number of PCs and rename them as needed.
+- Set hourly rates for each PC individually.
+- Assign users and top-up hours/minutes; the app will show the amount to pay.
+- Use the transaction history window to view all transactions and total daily revenue.
+- Export reports to CSV for accounting.
+- All data is saved atomically and backed up automatically.
 
 ## Data Files
-- Usage data is saved in `lanhouse_data.json`.
-- Backups are stored in the `backups/` folder.
-- Logs are written to `lanhouse.log`.
-- Reports are exported as CSV files in the project directory.
+- `lanhouse_data.json`: Main data file (PCs, users, rates, sessions)
+- `transactions.log`: Transaction log (top-ups, checkouts)
+- `backups/`: Automatic backups of data
+- `lanhouse.log`: General event log
+
+## Professional Features
+- Scheduled backups (coming soon)
+- Operator accounts and audit log (coming soon)
+- POS/payment integration (optional, planned)
+- Settings and help dialogs (planned)
 
 ## Support
-For help or feature requests, open an issue or contact the developer.
+For issues or feature requests, open an issue in this repository.
 
----
-*Last updated: October 17, 2025*
+## License
+MIT License
