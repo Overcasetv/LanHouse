@@ -13,8 +13,9 @@ import logging
 DATA_FILE = "lanhouse_data.json"
 BACKUP_DIR = "backups"
 LOG_FILE = "lanhouse.log"
+TRANSACTION_LOG = "transactions.log" # Novo log de transações para auditoria
 
-# setup simple file logger
+# setup logger for main events
 logger = logging.getLogger("lanhouse")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -22,13 +23,26 @@ if not logger.handlers:
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
     logger.addHandler(fh)
 
+# setup transaction logger for billing/top-up events
+trans_logger = logging.getLogger("transactions")
+trans_logger.setLevel(logging.INFO)
+if not trans_logger.handlers:
+    tfh = logging.FileHandler(TRANSACTION_LOG)
+    tfh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    trans_logger.addHandler(tfh)
+
 # --- Helper functions ---
 def load_data():
+    # Load data from the provided lanhouse_data.json
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            # Ensure basic structure if missing after load
+            data.setdefault("computers", {})
+            data.setdefault("hourly_rate", 15.0) 
+            return data
     else:
-        return {"computers": {}}
+        return {"computers": {}, "hourly_rate": 15.0}
 
 def atomic_write_json(path, data):
     # write to a temp file then atomically replace
@@ -74,11 +88,12 @@ def format_time(seconds):
 class LanHouseManager(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("LAN House Manager")
+        self.data = load_data()
+        # Janela agora exibe a taxa horária
+        self.title(f"Game House Manager - Rate: ${self.data.get('hourly_rate', 15.0):.2f}/h")
         self.geometry("480x420")
         self.resizable(False, False)
 
-        self.data = load_data()
         # initialize computers list from data if present, else default 6
         saved_keys = list(self.data.get("computers", {}).keys())
         if saved_keys:
@@ -86,7 +101,7 @@ class LanHouseManager(tk.Tk):
         else:
             self.computers = [f"PC-{i}" for i in range(1, 7)]
 
-        tk.Label(self, text="LAN House Time Manager", font=("Helvetica", 18, "bold")).pack(pady=10)
+        tk.Label(self, text="Game House Time Manager", font=("Helvetica", 18, "bold")).pack(pady=10)
 
         # top controls: number of PCs, rename, and billing rate
         top_ctrl = tk.Frame(self)
@@ -99,7 +114,7 @@ class LanHouseManager(tk.Tk):
 
         # Billing rate UI
         tk.Label(top_ctrl, text="Hourly Rate ($):").pack(side=tk.LEFT, padx=(16,2))
-        self.rate_var = tk.DoubleVar(value=self.data.get("hourly_rate", 5.0))
+        self.rate_var = tk.DoubleVar(value=self.data.get("hourly_rate", 15.0))
         rate_entry = tk.Entry(top_ctrl, textvariable=self.rate_var, width=6)
         rate_entry.pack(side=tk.LEFT)
         tk.Button(top_ctrl, text="Set Rate", command=self.set_rate).pack(side=tk.LEFT, padx=(2,0))
@@ -108,38 +123,15 @@ class LanHouseManager(tk.Tk):
         self.frame.pack(pady=10)
 
         self.pc_buttons = {}
-    def set_rate(self):
-        try:
-            rate = float(self.rate_var.get())
-            if rate < 0:
-                raise ValueError()
-            self.data["hourly_rate"] = rate
-            save_data(self.data)
-            messagebox.showinfo("Rate Set", f"Hourly rate set to ${rate:.2f}")
-        except Exception:
-            messagebox.showerror("Invalid", "Enter a valid non-negative rate.")
-        # Ensure data structure for each PC exists
-        for pc in self.computers:
-            if pc not in self.data.get("computers", {}):
-                self.data.setdefault("computers", {})[pc] = {
-                    "running": False,
-                    "start_time": None,
-                    "elapsed": 0.0,
-                    # new fields
-                    "user": None,
-                    # hours remaining in seconds
-                    "hours_remaining": 0.0,
-                    # rest_until: epoch timestamp until which PC is resting
-                    "rest_until": 0.0,
-                }
 
-        # Create UI tiles for each PC (this will also size the window)
+        # Ensure data structure for each PC exists and build UI
         self.build_pc_tiles()
 
         # UI control row
         ctrl = tk.Frame(self)
         ctrl.pack(pady=8)
-        tk.Button(ctrl, text="Save Now", command=self.save_now).pack(side=tk.LEFT, padx=6)
+        # Salvamento silencioso por padrão, com opção de mostrar info
+        tk.Button(ctrl, text="Save Now", command=lambda: self.save_now(show_info=True)).pack(side=tk.LEFT, padx=6)
         tk.Button(ctrl, text="Reset All", command=self.reset_all).pack(side=tk.LEFT, padx=6)
         tk.Button(ctrl, text="Export Report", command=self.export_report).pack(side=tk.LEFT, padx=(8,0))
         # Fit to screen toggle
@@ -154,6 +146,18 @@ class LanHouseManager(tk.Tk):
         self.update_display()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def set_rate(self):
+        try:
+            rate = float(self.rate_var.get())
+            if rate < 0:
+                raise ValueError()
+            self.data["hourly_rate"] = rate
+            self.title(f"Game House Manager - Rate: ${rate:.2f}/h")
+            save_data(self.data)
+            messagebox.showinfo("Rate Set", f"Hourly rate set to ${rate:.2f}")
+        except Exception:
+            messagebox.showerror("Invalid", "Enter a valid non-negative rate.")
+
     def build_pc_tiles(self):
         # clear existing
         for child in self.frame.winfo_children():
@@ -167,10 +171,9 @@ class LanHouseManager(tk.Tk):
                     "running": False,
                     "start_time": None,
                     "elapsed": 0.0,
-                    # new fields
                     "user": None,
-                    # hours remaining in seconds
                     "hours_remaining": 0.0,
+                    "rest_until": 0.0,
                 }
 
         # compute grid layout: try to make it roughly square, min 2 cols
@@ -179,12 +182,11 @@ class LanHouseManager(tk.Tk):
         rows = int(math.ceil(n / cols))
 
         # resize main window to accommodate tiles
-        width = max(600, cols * 240)
-        height = max(400, rows * 200 + 150)
+        width = max(480, cols * 240)
+        height = max(420, rows * 200 + 150)
         try:
             self.geometry(f"{width}x{height}")
         except Exception:
-            # ignore if geometry fails for some reason
             pass
 
         for i, pc in enumerate(self.computers):
@@ -224,8 +226,13 @@ class LanHouseManager(tk.Tk):
 
             rest_btn = tk.Button(tile, text="Rest", command=lambda p=pc: self.set_rest_dialog(p))
             rest_btn.pack(pady=(4,0))
+            
+            # NOVO: Botão Checkout para finalizar a cobrança
+            checkout_btn = tk.Button(tile, text="Checkout", command=lambda p=pc: self.checkout_pc(p))
+            checkout_btn.pack(pady=(4,0))
 
-            assign_btn = tk.Button(tile, text="Assign", command=lambda p=pc: self.assign_user(p))
+            # NOVO: Botão Assign/Top-up para setup rápido
+            assign_btn = tk.Button(tile, text="Assign/Top-up", command=lambda p=pc: self.topup_and_assign_dialog(p))
             assign_btn.pack(pady=(4,0))
 
             # preset top-up buttons
@@ -234,15 +241,12 @@ class LanHouseManager(tk.Tk):
             tk.Button(presets, text="+15m", width=4, command=lambda p=pc: self.topup_preset(p, 15)).pack(side=tk.LEFT, padx=2)
             tk.Button(presets, text="+30m", width=4, command=lambda p=pc: self.topup_preset(p, 30)).pack(side=tk.LEFT, padx=2)
             tk.Button(presets, text="+1h", width=4, command=lambda p=pc: self.topup_preset(p, 60)).pack(side=tk.LEFT, padx=2)
-            topup_btn = tk.Button(tile, text="Top-up", command=lambda p=pc: self.topup_hours(p))
-            topup_btn.pack()
-
+            
             btn_text = tk.StringVar()
             btn = tk.Button(tile, textvariable=btn_text, width=10, command=lambda p=pc: self.toggle_pc(p))
             btn.pack()
 
             # store widgets and vars
-            # store the default background color so we can restore it
             default_bg = tile.cget("bg")
 
             self.pc_buttons[pc] = {
@@ -264,47 +268,170 @@ class LanHouseManager(tk.Tk):
                 "rest_var": rest_var,
                 "rest_label": rest_label,
                 "rest_btn": rest_btn,
+                "checkout_btn": checkout_btn,
+                "assign_btn": assign_btn,
                 # runtime flags (not persisted)
                 "_notified_time_up": False,
                 "_notified_rest_done": False,
-                "assign_btn": assign_btn,
-                "topup_btn": topup_btn,
+                "_blink": False,
             }
-    def get_charge_text(self, pc):
+    
+    def get_charge_text(self, pc, final=False):
         info = self.data["computers"][pc]
-        rate = self.data.get("hourly_rate", 5.0)
+        rate = self.data.get("hourly_rate", 15.0)
         used_seconds = info.get("elapsed", 0)
-        if info.get("running") and info.get("start_time"):
+        
+        # Calculate time elapsed for running sessions only if not finalizing
+        if info.get("running") and info.get("start_time") and not final:
             used_seconds += time.time() - info["start_time"]
+            
         charge = (used_seconds / 3600) * rate
         return f"Charge: ${charge:.2f}"
 
-    
+    def checkout_pc(self, pc):
+        # Finaliza a sessão, calcula a cobrança e reseta o PC.
+        info = self.data["computers"][pc]
+        
+        # 1. Stop if running to finalize elapsed time
+        if info.get("running"):
+            self.toggle_pc(pc) # Vai parar e atualizar o elapsed time
+            
+        # 2. Get final charge
+        final_charge_text = self.get_charge_text(pc, final=True)
+        used_time = format_time(info.get("elapsed", 0))
+        user_name = info.get("user") or "N/A"
+        
+        # 3. Confirm and display final bill
+        if not messagebox.askyesno("Final Checkout", 
+                                   f"PC: {pc}\nUser: {user_name}\nTime Used: {used_time}\n\nTotal Due: {final_charge_text}\n\nConfirm payment and reset station?"):
+            return
+            
+        # 4. Log the transaction
+        trans_logger.info(f"CHECKOUT: PC={pc}, User={user_name}, Elapsed={used_time}, Charge={final_charge_text}")
+        
+        # 5. Reset station data (zero out)
+        self.data["computers"][pc] = {
+            "running": False,
+            "start_time": None,
+            "elapsed": 0.0,
+            "user": None,
+            "hours_remaining": 0.0,
+            "rest_until": 0.0,
+        }
+        
+        # Reset UI flags
+        widgets = self.pc_buttons[pc]
+        widgets["_notified_time_up"] = False
+        widgets["_notified_rest_done"] = False
+        widgets["_blink"] = False
+        
+        self.save_now(show_info=False) # Salva silenciosamente
+        self.update_display() # Força a atualização da UI
+        messagebox.showinfo("Checkout Complete", f"Payment confirmed. PC {pc} is now available.")
+
 
     def toggle_pc(self, pc):
         info = self.data["computers"][pc]
+        
+        # If running, stop the session
         if info.get("running"):
-            # stop
             start = info.get("start_time")
             if start:
                 elapsed = time.time() - start
                 info["elapsed"] = info.get("elapsed", 0) + elapsed
+                # decrement hours_remaining by delta seconds
+                info["hours_remaining"] = max(0.0, info.get("hours_remaining", 0) - elapsed)
+                
             info["running"] = False
             info["start_time"] = None
-        else:
-            # prevent starting if resting
-            now = time.time()
-            if info.get("rest_until", 0) > now:
-                messagebox.showwarning("Resting", f"PC {pc} is resting for {format_time(int(info['rest_until'] - now))} more.")
+            self.save_now(show_info=False)
+            return
+
+        # If not running: check conditions for starting
+        now = time.time()
+        # 1. Prevent starting if resting
+        if info.get("rest_until", 0) > now:
+            messagebox.showwarning("Resting", f"PC {pc} is resting for {format_time(int(info['rest_until'] - now))} more.")
+            return
+
+        # 2. If no user or no hours, redirect to Top-up/Assign dialog
+        if info.get("hours_remaining", 0) <= 0 or not info.get("user"):
+            if not messagebox.askyesno("Start Session", f"PC {pc} needs to be assigned and topped up. Open setup dialog?"):
                 return
-            # start only if there are hours remaining
-            if info.get("hours_remaining", 0) <= 0:
-                messagebox.showwarning("No hours", f"PC {pc} has no hours remaining. Top-up before starting.")
+            self.topup_and_assign_dialog(pc)
+            return
+
+        # 3. Start the session
+        info["running"] = True
+        info["start_time"] = time.time()
+        self.save_now(show_info=False)
+        
+    def topup_and_assign_dialog(self, pc):
+        # Diálogo que combina Assign User e Top-up Hours
+        info = self.data["computers"][pc]
+        
+        def do_topup_assign():
+            # 1. Assign User
+            name = entry_user.get().strip()
+            if name == "":
+                messagebox.showwarning("Invalid", "Please enter a non-empty name")
                 return
-            # consume any hours as the session runs; store start time
-            info["running"] = True
-            info["start_time"] = time.time()
-        self.save_now()
+            info["user"] = name
+            self.pc_buttons[pc]["user_var"].set(name)
+            
+            # 2. Top-up Hours
+            try:
+                hrs = float(entry_hours.get() or 0)
+                mins = float(entry_mins.get() or 0)
+                if hrs < 0 or mins < 0:
+                    raise ValueError()
+            except Exception:
+                messagebox.showwarning("Invalid", "Enter non-negative numbers for hours and minutes")
+                return
+            added = hrs * 3600 + mins * 60
+            if added <= 0:
+                 messagebox.showwarning("Invalid", "Enter a positive amount to add")
+                 return
+                 
+            # Convert to seconds and add
+            info["hours_remaining"] = info.get("hours_remaining", 0) + added
+            self.pc_buttons[pc]["hours_var"].set(f"Hours: {info['hours_remaining']/3600:.2f}")
+            
+            # Log the Top-up transaction
+            trans_logger.info(f"TOPUP: PC={pc}, User={name}, HoursAdded={round(added/3600, 2)}")
+
+            self.pc_buttons[pc]["_notified_time_up"] = False
+            
+            dlg.destroy()
+            self.save_now(show_info=False)
+            
+            # Prompt to start if session wasn't running
+            if not info.get("running"):
+                 if messagebox.askyesno("Start Now?", f"Hours topped up for {pc}. Do you want to START the session now?"):
+                    self.toggle_pc(pc)
+
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Setup Session for {pc}")
+        
+        # User assignment section
+        tk.Label(dlg, text="1. User name:").grid(row=0, column=0, padx=8, pady=(8,0), sticky='w')
+        entry_user = tk.Entry(dlg)
+        entry_user.insert(0, info.get("user") or "")
+        entry_user.grid(row=0, column=1, padx=8, pady=(8,0))
+        
+        # Hours top-up section
+        tk.Label(dlg, text="2. Hours to add:").grid(row=1, column=0, padx=8, pady=(4,0), sticky='w')
+        entry_hours = tk.Entry(dlg, width=8)
+        entry_hours.insert(0, "1")
+        entry_hours.grid(row=1, column=1, padx=8, pady=(4,0))
+        
+        tk.Label(dlg, text="Minutes to add:").grid(row=2, column=0, padx=8, pady=(4,0), sticky='w')
+        entry_mins = tk.Entry(dlg, width=8)
+        entry_mins.insert(0, "0")
+        entry_mins.grid(row=2, column=1, padx=8, pady=(4,0))
+        
+        tk.Button(dlg, text="Confirm Setup & Top-up", command=do_topup_assign).grid(row=3, column=0, columnspan=2, pady=(16,8))
 
     def set_rest_dialog(self, pc):
         info = self.data["computers"][pc]
@@ -319,7 +446,7 @@ class LanHouseManager(tk.Tk):
             info["rest_until"] = time.time() + mins * 60
             self.pc_buttons[pc]["rest_var"].set(f"Rest: {format_time(int(info['rest_until'] - time.time()))}")
             dlg.destroy()
-            self.save_now()
+            self.save_now(show_info=False)
 
         dlg = tk.Toplevel(self)
         dlg.title(f"Set rest for {pc}")
@@ -329,67 +456,16 @@ class LanHouseManager(tk.Tk):
         entry.pack(padx=8, pady=8)
         tk.Button(dlg, text="Set Rest", command=do_set).pack(pady=(0,8))
 
-    def assign_user(self, pc):
-        info = self.data["computers"][pc]
-        def do_assign():
-            name = entry.get().strip()
-            if name == "":
-                messagebox.showwarning("Invalid", "Please enter a non-empty name")
-                return
-            info["user"] = name
-            self.pc_buttons[pc]["user_var"].set(name)
-            dlg.destroy()
-            self.save_now()
-
-        dlg = tk.Toplevel(self)
-        dlg.title(f"Assign user to {pc}")
-        tk.Label(dlg, text="User name:").pack(padx=8, pady=(8,0))
-        entry = tk.Entry(dlg)
-        entry.insert(0, info.get("user") or "")
-        entry.pack(padx=8, pady=8)
-        tk.Button(dlg, text="Assign", command=do_assign).pack(pady=(0,8))
-
-    def topup_hours(self, pc):
-        info = self.data["computers"][pc]
-        def do_topup():
-            try:
-                hrs = float(entry_hours.get() or 0)
-                mins = float(entry_mins.get() or 0)
-                if hrs < 0 or mins < 0:
-                    raise ValueError()
-            except Exception:
-                messagebox.showwarning("Invalid", "Enter non-negative numbers for hours and minutes")
-                return
-            added = hrs * 3600 + mins * 60
-            if added <= 0:
-                messagebox.showwarning("Invalid", "Enter a positive amount to add")
-                return
-            # convert to seconds and add
-            info["hours_remaining"] = info.get("hours_remaining", 0) + added
-            self.pc_buttons[pc]["hours_var"].set(f"Hours: {info['hours_remaining']/3600:.2f}")
-            dlg.destroy()
-            self.save_now()
-
-        dlg = tk.Toplevel(self)
-        dlg.title(f"Top-up hours for {pc}")
-        tk.Label(dlg, text="Hours to add:").grid(row=0, column=0, padx=8, pady=(8,0))
-        tk.Label(dlg, text="Minutes to add:").grid(row=1, column=0, padx=8, pady=(4,0))
-        entry_hours = tk.Entry(dlg, width=8)
-        entry_hours.insert(0, "1")
-        entry_hours.grid(row=0, column=1, padx=8, pady=(8,0))
-        entry_mins = tk.Entry(dlg, width=8)
-        entry_mins.insert(0, "0")
-        entry_mins.grid(row=1, column=1, padx=8, pady=(4,0))
-        tk.Button(dlg, text="Top-up", command=do_topup).grid(row=2, column=0, columnspan=2, pady=(8,8))
 
     def topup_preset(self, pc, minutes):
         info = self.data["computers"][pc]
         added = minutes * 60
         info["hours_remaining"] = info.get("hours_remaining", 0) + added
         self.pc_buttons[pc]["hours_var"].set(f"Hours: {info['hours_remaining']/3600:.2f}")
-        # clear time-up notification if any
+        # Log the Top-up transaction
+        trans_logger.info(f"TOPUP: PC={pc}, User={info.get('user', 'N/A')}, HoursAdded={round(added/3600, 2)}")
         self.pc_buttons[pc]["_notified_time_up"] = False
-        self.save_now()
+        self.save_now(show_info=False)
 
     def notify(self, title, message):
         try:
@@ -398,7 +474,10 @@ class LanHouseManager(tk.Tk):
         except Exception:
             pass
         try:
-            messagebox.showinfo(title, message)
+            # Use simple top-level window for non-intrusive notification
+            tld = tk.Toplevel(self)
+            tld.title(title)
+            tk.Label(tld, text=message, padx=20, pady=20).pack()
         except Exception:
             # fallback to logger
             logger.info(f"{title}: {message}")
@@ -408,6 +487,8 @@ class LanHouseManager(tk.Tk):
         for pc, widgets in self.pc_buttons.items():
             info = self.data["computers"][pc]
             elapsed = info.get("elapsed", 0)
+            
+            # --- Timer Logic ---
             if info.get("running") and info.get("start_time"):
                 now = time.time()
                 delta = now - info["start_time"]
@@ -415,7 +496,8 @@ class LanHouseManager(tk.Tk):
                 # decrement hours_remaining by delta seconds
                 info["hours_remaining"] = max(0.0, info.get("hours_remaining", 0) - delta)
                 # move start_time forward to now so we don't double-count next tick
-                info["start_time"] = now
+                info["start_time"] = now 
+                
                 # auto-stop if we've run out of hours
                 if info.get("hours_remaining", 0) <= 0:
                     # finalize elapsed and stop
@@ -426,53 +508,53 @@ class LanHouseManager(tk.Tk):
                         self.notify("Time's up", f"PC {pc} time has expired.")
                         widgets["_notified_time_up"] = True
                     # save state
-                    self.save_now()
+                    self.save_now(show_info=False)
+            
+            # --- UI Updates ---
             widgets["time_var"].set(format_time(elapsed))
             widgets["btn_text"].set("Stop" if info.get("running") else "Start")
             widgets["hours_var"].set(f"Hours: {info.get('hours_remaining', 0)/3600:.2f}")
-            # update charge display
             widgets["charge_var"].set(self.get_charge_text(pc))
-            # update rest label if resting
+            remaining = int(info.get('hours_remaining', 0))
+            widgets.get('remaining_var', tk.StringVar()).set(format_time(remaining))
+
+            # --- Rest Timer Check ---
             now = time.time()
             rest_until = info.get("rest_until", 0)
             if rest_until > now:
                 widgets["rest_var"].set(f"Rest: {format_time(int(rest_until - now))}")
+                if widgets.get("_notified_rest_done"):
+                    widgets["_notified_rest_done"] = False # reset flag after update
             else:
                 widgets["rest_var"].set("")
-                # notify when rest finished (once)
                 if widgets.get("_notified_rest_done") is False and info.get("rest_until", 0) > 0:
                     self.notify("Rest finished", f"PC {pc} rest period finished.")
                     widgets["_notified_rest_done"] = True
-
-            # update remaining countdown display
-            remaining = int(info.get('hours_remaining', 0))
-            widgets.get('remaining_var', tk.StringVar()).set(format_time(remaining))
-
-            # special case: if no user assigned and no hours, show solid green
+            
+            # --- Visual Status (Color Coding) ---
+            default_bg = widgets.get("default_bg", None)
+            
+            # State 1: Available (Green) - No user, not running, no time
             if (info.get("hours_remaining", 0) <= 0 and not info.get("running") and not info.get("user")):
-                try:
-                    widgets["frame"].configure(bg="#ddffdd")
-                    widgets["_blink"] = False
-                except Exception:
-                    pass
-            # blinking when hours are up (and not running)
-            elif info.get("hours_remaining", 0) <= 0 and not info.get("running"):
-                # toggle blink flag per widget
+                widgets["frame"].configure(bg="#ddffdd")
+                widgets["_blink"] = False
+            # State 2: Time Expired (Blinking Red) - Has user/elapsed time, but no hours left
+            elif info.get("hours_remaining", 0) <= 0 and not info.get("running") and (info.get("user") or info.get("elapsed", 0) > 0):
                 blink = widgets.get("_blink", False)
                 blink = not blink
                 widgets["_blink"] = blink
                 if blink:
                     widgets["frame"].configure(bg="#ff4444")
                 else:
-                    # lighter red to create blink effect
                     widgets["frame"].configure(bg="#ffdddd")
+            # State 3: Running - Low Time Warning (Yellow)
+            elif info.get("running") and info.get("hours_remaining", 0) <= (10 * 60): # 10 minutes warning
+                 widgets["frame"].configure(bg="#ffffcc")
+                 widgets["_blink"] = False
+            # State 4: Default/Normal
             else:
-                # restore default
-                try:
-                    widgets["frame"].configure(bg=widgets.get("default_bg", None))
-                    widgets["_blink"] = False
-                except Exception:
-                    pass
+                widgets["frame"].configure(bg=default_bg)
+                widgets["_blink"] = False
 
         if self._running_update:
             self.after(500, self.update_display)
@@ -507,7 +589,7 @@ class LanHouseManager(tk.Tk):
                     del self.data["computers"][pc]
         # rebuild UI
         self.build_pc_tiles()
-        self.save_now()
+        self.save_now(show_info=False)
 
     def on_fit_toggle(self):
         # toggle fit to screen: maximize to available screen area or restore previous geometry
@@ -536,7 +618,7 @@ class LanHouseManager(tk.Tk):
             with open(path, 'w', newline='') as csvfile:
                 w = csv.writer(csvfile)
                 w.writerow(["PC", "User", "Elapsed (s)", "Elapsed (H:M:S)", "Hours Remaining (h)", "Running", "Charge ($)"])
-                rate = self.data.get("hourly_rate", 5.0)
+                rate = self.data.get("hourly_rate", 15.0)
                 for pc in self.computers:
                     info = self.data.get('computers', {}).get(pc, {})
                     elapsed = info.get('elapsed', 0)
@@ -579,21 +661,31 @@ class LanHouseManager(tk.Tk):
             self.computers[idx] = new
             dlg.destroy()
             self.build_pc_tiles()
-            self.save_now()
+            self.save_now(show_info=False)
 
         tk.Button(dlg, text="Rename", command=do_rename).pack(pady=(0,8))
 
-    def save_now(self):
+    def save_now(self, show_info=True):
         # ensure running timers have start_time stored and elapsed preserved
         save_data(self.data)
-        messagebox.showinfo("Saved", "Data saved.")
+        if show_info:
+            messagebox.showinfo("Saved", "Data saved.")
 
     def reset_all(self):
-        if not messagebox.askyesno("Reset", "Reset all timers and data?"):
+        if not messagebox.askyesno("Reset", "Reset all timers and data? This action CANNOT be undone."):
             return
         for pc in self.computers:
-            self.data["computers"][pc] = {"running": False, "start_time": None, "elapsed": 0.0}
-        self.save_now()
+            # Keep user assigned, but reset everything else
+            user = self.data["computers"].get(pc, {}).get("user")
+            self.data["computers"][pc] = {
+                "running": False, 
+                "start_time": None, 
+                "elapsed": 0.0, 
+                "user": user, # Keep user assigned if one exists
+                "hours_remaining": 0.0,
+                "rest_until": 0.0
+            }
+        self.save_now(show_info=False)
 
     def on_close(self):
         # stop running timers and persist elapsed time
