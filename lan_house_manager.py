@@ -114,7 +114,7 @@ class LanHouseManager(tk.Tk):
         top_ctrl.pack(pady=(0,8))
         tk.Label(top_ctrl, text="# PCs:").pack(side=tk.LEFT)
         self.pc_count_var = tk.IntVar(value=len(self.computers))
-        pc_spin = tk.Spinbox(top_ctrl, from_=1, to=32, width=4, textvariable=self.pc_count_var, command=self.on_pc_count_change)
+        pc_spin = tk.Spinbox(top_ctrl, from_=1, to_=32, width=4, textvariable=self.pc_count_var, command=self.on_pc_count_change)
         pc_spin.pack(side=tk.LEFT, padx=(4,8))
         tk.Button(top_ctrl, text="Rename PC", command=self.rename_pc_dialog).pack(side=tk.LEFT)
 
@@ -130,8 +130,26 @@ class LanHouseManager(tk.Tk):
         tk.Button(top_ctrl, text="Set Rate", command=self.set_rate).pack(side=tk.LEFT, padx=(2,0))
         self._on_rate_pc_change(self.rate_pc_var.get())
 
-        self.frame = tk.Frame(self)
-        self.frame.pack(pady=10)
+
+        # --- Scrollable area for PC tiles ---
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self.frame = tk.Frame(self.canvas)
+        self.vsb = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.hsb = tk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.canvas.configure(yscrollcommand=self.vsb.set, xscrollcommand=self.hsb.set)
+
+        self.vsb.pack(side="right", fill="y")
+        self.hsb.pack(side="bottom", fill="x")
+        self.canvas.pack(side="left", fill="both", expand=True, pady=10)
+        self.canvas.create_window((0,0), window=self.frame, anchor="nw")
+
+        def _on_frame_configure(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.frame.bind("<Configure>", _on_frame_configure)
+
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         self.pc_buttons = {}
 
@@ -276,6 +294,26 @@ class LanHouseManager(tk.Tk):
             btn = tk.Button(tile, textvariable=btn_text, width=10, command=lambda p=pc: self.toggle_pc(p))
             btn.pack()
 
+            # Show total time added for this session
+            total_added = 0
+            if 'topups' in self.data['computers'][pc]:
+                total_added = sum(t['amount'] for t in self.data['computers'][pc]['topups'])
+            added_time_var = tk.StringVar(value=f"Added: {format_time(total_added)}")
+            added_time_label = tk.Label(tile, textvariable=added_time_var, font=("Helvetica", 10), fg="purple")
+            added_time_label.pack()
+
+            # Notes for this PC
+            pc_info = self.data['computers'][pc]
+            note_var = tk.StringVar(value=pc_info.get('note', ''))
+            def save_note(event=None, pc=pc, var=note_var):
+                self.data['computers'][pc]['note'] = var.get()
+                self.save_now(show_info=False)
+            note_entry = tk.Entry(tile, textvariable=note_var, width=18, font=("Helvetica", 10), fg="darkgreen")
+            note_entry.pack(pady=(2,0))
+            note_entry.bind('<FocusOut>', lambda e, pc=pc, var=note_var: save_note(pc=pc, var=var))
+            note_entry.bind('<Return>', lambda e, pc=pc, var=note_var: save_note(pc=pc, var=var))
+            note_entry.config(highlightbackground="#b0e0b0", highlightcolor="#008000")
+
             # store widgets and vars
             default_bg = tile.cget("bg")
 
@@ -304,13 +342,35 @@ class LanHouseManager(tk.Tk):
                 "_notified_time_up": False,
                 "_notified_rest_done": False,
                 "_blink": False,
+                # Added time widgets
+                "added_time_var": added_time_var,
+                "added_time_label": added_time_label,
+                # Note widgets
+                "note_var": note_var,
+                "note_entry": note_entry,
             }
     
     def get_charge_text(self, pc, final=False):
         info = self.data["computers"][pc]
+        # If there are tracked topups, sum their cost for the session
+        if info.get("topups"):
+            total_due = sum(t["cost"] for t in info["topups"])
+            # If session is running, add the value of time used since last top-up
+            if info.get("running") and info.get("start_time"):
+                now = time.time()
+                last_topup_time = max((t["timestamp"] for t in info["topups"]), default=info["start_time"])
+                extra_seconds = now - info["start_time"]
+                # Only charge for extra time if user has used more than what was topped up
+                # (e.g., if they run out of topped-up time and keep running)
+                if info.get("hours_remaining", 0) <= 0:
+                    rate = info.get("rate", self.data.get("hourly_rate", 15.0))
+                    extra_charge = (extra_seconds / 3600) * rate
+                    total_due += extra_charge
+                    return f"Total Due: ${total_due:.2f} (all top-ups + overtime)"
+            return f"Total Due: ${total_due:.2f} (all top-ups)"
+        # fallback to elapsed * rate if no topups (legacy)
         rate = info.get("rate", self.data.get("hourly_rate", 15.0))
         used_seconds = info.get("elapsed", 0)
-        # Calculate time elapsed for running sessions only if not finalizing
         if info.get("running") and info.get("start_time") and not final:
             used_seconds += time.time() - info["start_time"]
         charge = (used_seconds / 3600) * rate
@@ -438,6 +498,20 @@ class LanHouseManager(tk.Tk):
             info["hours_remaining"] = info.get("hours_remaining", 0) + added
             self.pc_buttons[pc]["hours_var"].set(f"Hours: {info['hours_remaining']/3600:.2f}")
 
+            # Track this top-up for the session
+            if "topups" not in info:
+                info["topups"] = []
+            info["topups"].append({
+                "amount": added,
+                "rate": rate,
+                "cost": (added/3600) * rate,
+                "timestamp": time.time(),
+            })
+            # Update added time label if present
+            if "added_time_var" in self.pc_buttons[pc]:
+                total_added = sum(t['amount'] for t in info['topups'])
+                self.pc_buttons[pc]["added_time_var"].set(f"Added: {format_time(total_added)}")
+
             # Log the Top-up transaction
             trans_logger.info(f"TOPUP: PC={pc}, User={name}, HoursAdded={round(added/3600, 2)}, Rate={rate}")
 
@@ -515,6 +589,21 @@ class LanHouseManager(tk.Tk):
         trans_logger.info(f"TOPUP: PC={pc}, User={info.get('user', 'N/A')}, HoursAdded={round(added/3600, 2)}")
         self.pc_buttons[pc]["_notified_time_up"] = False
         self.save_now(show_info=False)
+
+        # Track this top-up for the session
+        if "topups" not in info:
+            info["topups"] = []
+        rate = info.get("rate", self.data.get("hourly_rate", 15.0))
+        info["topups"].append({
+            "amount": added,
+            "rate": rate,
+            "cost": (added/3600) * rate,
+            "timestamp": time.time(),
+        })
+        # Update added time label if present
+        if "added_time_var" in self.pc_buttons[pc]:
+            total_added = sum(t['amount'] for t in info['topups'])
+            self.pc_buttons[pc]["added_time_var"].set(f"Added: {format_time(total_added)}")
 
     def notify(self, title, message):
         try:
@@ -604,6 +693,13 @@ class LanHouseManager(tk.Tk):
             else:
                 widgets["frame"].configure(bg=default_bg)
                 widgets["_blink"] = False
+
+            # Update added time label
+            total_added = 0
+            if 'topups' in info:
+                total_added = sum(t['amount'] for t in info['topups'])
+            if "added_time_var" in widgets:
+                widgets["added_time_var"].set(f"Added: {format_time(total_added)}")
 
         if self._running_update:
             self.after(500, self.update_display)
