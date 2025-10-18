@@ -1,6 +1,6 @@
 # Game House Manager
 
-A professional LAN house management system for tracking PC usage, billing, and transactions. Built with Python and Tkinter.
+A professional LAN house management system for tracking PC usage, billing, transactions, and operator notes. Built with Python and Tkinter.
 
 ## Features
 - Per-PC hourly rates (set different rates for each PC)
@@ -9,12 +9,15 @@ A professional LAN house management system for tracking PC usage, billing, and t
 - Transaction history window (shows all top-ups and checkouts, with daily totals)
 - Visual status indicators (available, running, time expired, rest)
 - Rest timer for PCs
-- Fit-to-screen and manual resizing
+- Fit-to-screen, scrollable, and manual resizing
 - Atomic data saves and backup system
 - Logging of all transactions and events
 - CSV export for daily usage and billing reports
 - Easy PC count adjustment and renaming
 - Transparent background for professional look
+- **Live charge calculation**: See the current amount due for each PC as time is used
+- **Session time tracking**: See total time added for each session, updated live
+- **Per-PC notes**: Add and save operator notes for each PC
 
 ## Installation
 1. Ensure you have Python 3.8+ installed.
@@ -34,10 +37,11 @@ A professional LAN house management system for tracking PC usage, billing, and t
 - Assign users and top-up hours/minutes; the app will show the amount to pay.
 - Use the transaction history window to view all transactions and total daily revenue.
 - Export reports to CSV for accounting.
+- Add notes for each PC (e.g., maintenance, user requests, etc.).
 - All data is saved atomically and backed up automatically.
 
 ## Data Files
-- `lanhouse_data.json`: Main data file (PCs, users, rates, sessions)
+- `lanhouse_data.json`: Main data file (PCs, users, rates, sessions, notes)
 - `transactions.log`: Transaction log (top-ups, checkouts)
 - `backups/`: Automatic backups of data
 - `lanhouse.log`: General event log
